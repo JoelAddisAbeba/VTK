@@ -1,46 +1,61 @@
-"""Vatikan-Ticket-Watcher: prüft 'Vatican Museums - Admission Ticket' für 2 Personen
-am 30.09.–03.10.2026 und schickt eine Push-Nachricht via ntfy."""
+"""Vatikan-Ticket-Watcher v3: prüft das Einzel-Eintrittsticket (2 Pers., Singles)
+für 30.09.–03.10.2026 und schickt eine Push-Nachricht via ntfy."""
 import datetime
 import os
 import re
+from zoneinfo import ZoneInfo
 
 import requests
 from playwright.sync_api import sync_playwright
 
-# URL der Ergebnisseite (Besucher 2, Vatican Museums, Singles) – als GitHub-Variable TICKET_URL setzen
-URL = os.environ["TICKET_URL"]
-TOPIC = os.environ["NTFY_TOPIC"]
+TOPIC = os.environ.get("NTFY_TOPIC", "").strip()
 TEST = os.getenv("TEST") == "1"
-
-DATES = ["30 Sep", "1 Oct", "2 Oct", "3 Oct"]  # 4 Oct ist geschlossen
-LAST_DAY = datetime.date(2026, 10, 3)
-TITLE = re.compile(r"Vatican Museums\s*-\s*Admission Ticket", re.I)
-NOT_AVAILABLE = ["not available", "currently unavailable", "sold out"]
+ROME = ZoneInfo("Europe/Rome")
+DAYS = [datetime.date(2026, 9, 30), datetime.date(2026, 10, 1),
+        datetime.date(2026, 10, 2), datetime.date(2026, 10, 3)]
+VISITORS = 2
 OUT = "debug"
 
+TITLE = re.compile(r"^\s*(Vatican Museums\s*-\s*Admission Ticket|Musei Vaticani\s*-\s*Biglietti d.ingresso)\s*$", re.I)
+NOT_AVAILABLE = ["not available", "unavailable", "non disponibil", "non prenotabil", "nicht verfügbar", "sold out"]
+MONTHS_IT = {9: "settembre", 10: "ottobre"}
+MONTHS_EN = {9: "September", 10: "October"}
 
-def notify(msg, title="Vatikan: Tickets frei!", priority="urgent"):
-    requests.post(
+
+def day_url(day):
+    """URL-Schema der Seite: /home/visit/<Besucher>/<Mitternacht Rom in ms>/1/1"""
+    ts = int(datetime.datetime(day.year, day.month, day.day, tzinfo=ROME).timestamp() * 1000)
+    return f"https://tickets.museivaticani.va/home/visit/{VISITORS}/{ts}/1/1"
+
+
+def notify(msg, title="Vatikan: Tickets frei!", priority="urgent", click="https://tickets.museivaticani.va"):
+    if not TOPIC:
+        print("FEHLER: NTFY_TOPIC ist leer – Secret wird nicht gefunden!")
+        return
+    r = requests.post(
         f"https://ntfy.sh/{TOPIC}",
         data=msg.encode("utf-8"),
-        headers={"Title": title, "Priority": priority, "Click": URL, "Tags": "ticket"},
+        headers={"Title": title, "Priority": priority, "Click": click, "Tags": "ticket"},
         timeout=15,
     )
+    print(f"ntfy: Status {r.status_code}")
 
 
 def card_text(page):
-    """Text der Karte 'Vatican Museums - Admission Ticket' (kleinster Container mit Status)."""
     heading = page.get_by_text(TITLE).first
-    heading.wait_for(timeout=20000)
+    heading.wait_for(timeout=25000)
     for level in range(1, 10):
         text = heading.locator(f"xpath=ancestor::*[{level}]").inner_text()
-        if "visitors" in text.lower():  # 'No. Of visitors 1 - 6' = Kartenende erreicht
+        low = text.lower()
+        if "visitors" in low or "partecipanti" in low:
             return text
     return heading.locator("xpath=ancestor::*[6]").inner_text()
 
 
 def main():
-    if datetime.date.today() > LAST_DAY:
+    today = datetime.datetime.now(ROME).date()
+    days = [d for d in DAYS if d >= today]
+    if not days:
         print("Zeitraum vorbei – nichts zu tun.")
         return
     if TEST:
@@ -51,46 +66,50 @@ def main():
 
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        page = browser.new_page(
-            locale="en-US",
-            extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+        ctx = browser.new_context(
+            timezone_id="Europe/Rome",
+            viewport={"width": 1400, "height": 1000},
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/128.0 Safari/537.36"
             ),
         )
-        page.goto(URL, wait_until="networkidle", timeout=60000)
+        page = ctx.new_page()
 
-        if "captcha" in page.inner_text("body").lower():
-            page.screenshot(path=f"{OUT}/blocked.png", full_page=True)
-            print("CAPTCHA – Watcher wird geblockt.")
-            if TEST:
-                notify("Achtung: Seite blockt den Watcher.", title="Watcher blockiert", priority="high")
-            browser.close()
-            return
-
-        for label in DATES:
+        for day in days:
+            name = day.strftime("%d.%m.")
+            url = day_url(day)
             try:
-                page.get_by_text(label, exact=True).first.click()
-                page.wait_for_load_state("networkidle", timeout=30000)
-                page.wait_for_timeout(1500)
+                page.goto(url, wait_until="networkidle", timeout=60000)
+                page.wait_for_timeout(2000)
+                body = page.inner_text("body")
+                if "captcha" in body.lower():
+                    print("CAPTCHA – Watcher wird geblockt.")
+                    page.screenshot(path=f"{OUT}/blocked.png", full_page=True)
+                    break
+                # Kontrolle: zeigt die Seite wirklich das richtige Datum?
+                shown = re.search(rf"\b{day.day} ({MONTHS_IT[day.month]}|{MONTHS_EN[day.month]})", body, re.I)
+                if not shown:
+                    print(f"{name}: Seite zeigt ein anderes Datum – übersprungen")
+                    page.screenshot(path=f"{OUT}/wrongdate_{name}.png", full_page=True)
+                    continue
                 text = card_text(page).lower()
-                page.screenshot(path=f"{OUT}/{label.replace(' ', '_')}.png")
                 available = not any(k in text for k in NOT_AVAILABLE)
-                print(f"{label}: {'FREI' if available else 'ausgebucht'}")
+                print(f"{name}: {'FREI' if available else 'ausgebucht'}")
+                page.screenshot(path=f"{OUT}/{name}.png")
                 if available:
-                    free.append(label)
+                    free.append((name, url))
             except Exception as e:
-                print(f"{label}: Fehler – {e}")
-                page.screenshot(path=f"{OUT}/error_{label.replace(' ', '_')}.png", full_page=True)
+                print(f"{name}: Fehler – {str(e).splitlines()[0]}")
+                page.screenshot(path=f"{OUT}/error_{name}.png", full_page=True)
 
         browser.close()
 
     if free:
-        msg = "Admission Ticket (2 Pers.) verfügbar: " + ", ".join(free)
-        if "30 Sep" in free:
-            msg += "\n30.09.: Uhrzeit prüfen (nur nachmittags/abends sinnvoll)."
-        notify(msg + "\nJetzt buchen!")
+        msg = "Eintrittsticket (2 Pers.) verfügbar: " + ", ".join(n for n, _ in free)
+        if any(n == "30.09." for n, _ in free):
+            msg += "\n30.09.: Uhrzeit prüfen (nur nachmittags/abends)."
+        notify(msg + "\nJetzt buchen!", click=free[0][1])
 
 
 if __name__ == "__main__":
