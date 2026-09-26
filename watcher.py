@@ -61,11 +61,9 @@ def main():
     if not days:
         print("Zeitraum vorbei – nichts zu tun.")
         return
-    if TEST:
-        notify("Testnachricht: Der Watcher läuft.", title="Vatikan-Watcher Test", priority="default")
-
     os.makedirs(OUT, exist_ok=True)
     free = []
+    report = []
 
     with sync_playwright() as p:
         browser = p.chromium.launch()
@@ -94,19 +92,26 @@ def main():
                 shown = re.search(rf"\b0?{day.day} ({MONTHS_IT[day.month]}|{MONTHS_EN[day.month]})", body, re.I)
                 if not shown:
                     print(f"{name}: Seite zeigt ein anderes Datum – übersprungen")
+                    report.append(f"{name}: nicht geprüft")
                     page.screenshot(path=f"{OUT}/wrongdate_{name}.png", full_page=True)
                     continue
                 status = card_status(page)
                 available = bool(AVAILABLE.fullmatch(status))
                 print(f"{name}: {'FREI' if available else 'ausgebucht'} (Button: {status})")
+                report.append(f"{name}: {'FREI' if available else 'ausgebucht'}")
                 page.screenshot(path=f"{OUT}/{name}.png")
                 if available:
                     free.append((name, url))
             except Exception as e:
                 print(f"{name}: Fehler – {str(e).splitlines()[0]}")
+                report.append(f"{name}: Fehler")
                 page.screenshot(path=f"{OUT}/error_{name}.png", full_page=True)
 
         browser.close()
+
+    # Manueller Start: Statusbericht aufs Handy
+    if TEST:
+        notify("\n".join(report) or "Keine Tage geprüft.", title="Vatikan-Watcher Status", priority="default")
 
     if free:
         msg = "Eintrittsticket (2 Pers.) verfügbar: " + ", ".join(n for n, _ in free)
