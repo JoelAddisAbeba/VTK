@@ -1,0 +1,29 @@
+name: vatican-watch
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # alle 5 Minuten (GitHub verzögert manchmal)
+  workflow_dispatch:         # manueller Start = Testlauf mit Testnachricht
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install playwright requests && playwright install --with-deps chromium
+      - run: python watcher.py
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          AVAILABLE_SELECTOR: ${{ vars.AVAILABLE_SELECTOR }}
+          TICKET_URL: ${{ vars.TICKET_URL }}
+          TEST: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: debug
+          path: debug/
+          retention-days: 2
