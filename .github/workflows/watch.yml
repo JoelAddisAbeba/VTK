@@ -17,9 +17,7 @@ jobs:
       - run: pip install playwright requests && playwright install --with-deps chromium
       - run: python watcher.py
         env:
-          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-          AVAILABLE_SELECTOR: ${{ vars.AVAILABLE_SELECTOR }}
-          TICKET_URL: ${{ vars.TICKET_URL }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC || vars.NTFY_TOPIC }}
           TEST: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
       - uses: actions/upload-artifact@v4
         if: always()
