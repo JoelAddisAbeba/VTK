@@ -17,7 +17,9 @@ VISITORS = 2
 OUT = "debug"
 
 TITLE = re.compile(r"^\s*(Vatican Museums\s*-\s*Admission Ticket|Musei Vaticani\s*-\s*Biglietti d.ingresso)\s*$", re.I)
-NOT_AVAILABLE = ["not available", "unavailable", "non disponibil", "non prenotabil", "nicht verfügbar", "sold out"]
+# Status-Button der Karte: nur "PRENOTA"/"BOOK" zählt als frei
+STATUS = re.compile(r"\b(prenota|book|non disponibil\w*|not available|non prenotabil\w*|unavailable)\b", re.I)
+AVAILABLE = re.compile(r"\b(prenota|book)\b", re.I)
 MONTHS_IT = {9: "settembre", 10: "ottobre"}
 MONTHS_EN = {9: "September", 10: "October"}
 
@@ -41,15 +43,16 @@ def notify(msg, title="Vatikan: Tickets frei!", priority="urgent", click="https:
     print(f"ntfy: Status {r.status_code}")
 
 
-def card_text(page):
+def card_status(page):
+    """Sucht den kleinsten Container um den Titel, der einen Status-Button enthält."""
     heading = page.get_by_text(TITLE).first
     heading.wait_for(timeout=25000)
-    for level in range(1, 10):
+    for level in range(1, 12):
         text = heading.locator(f"xpath=ancestor::*[{level}]").inner_text()
-        low = text.lower()
-        if "visitors" in low or "partecipanti" in low:
-            return text
-    return heading.locator("xpath=ancestor::*[6]").inner_text()
+        m = STATUS.search(text)
+        if m:
+            return m.group(0)
+    raise RuntimeError("Status-Button der Karte nicht gefunden")
 
 
 def main():
@@ -88,14 +91,14 @@ def main():
                     page.screenshot(path=f"{OUT}/blocked.png", full_page=True)
                     break
                 # Kontrolle: zeigt die Seite wirklich das richtige Datum?
-                shown = re.search(rf"\b{day.day} ({MONTHS_IT[day.month]}|{MONTHS_EN[day.month]})", body, re.I)
+                shown = re.search(rf"\b0?{day.day} ({MONTHS_IT[day.month]}|{MONTHS_EN[day.month]})", body, re.I)
                 if not shown:
                     print(f"{name}: Seite zeigt ein anderes Datum – übersprungen")
                     page.screenshot(path=f"{OUT}/wrongdate_{name}.png", full_page=True)
                     continue
-                text = card_text(page).lower()
-                available = not any(k in text for k in NOT_AVAILABLE)
-                print(f"{name}: {'FREI' if available else 'ausgebucht'}")
+                status = card_status(page)
+                available = bool(AVAILABLE.fullmatch(status))
+                print(f"{name}: {'FREI' if available else 'ausgebucht'} (Button: {status})")
                 page.screenshot(path=f"{OUT}/{name}.png")
                 if available:
                     free.append((name, url))
