@@ -1,14 +1,19 @@
 name: vatican-watch
 
 on:
-  schedule:
-    - cron: "3-59/5 * * * *"
   workflow_dispatch:
+    inputs:
+      test:
+        description: "Testnachricht senden"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   watch:
     runs-on: ubuntu-latest
     timeout-minutes: 6
+
     steps:
       - uses: actions/checkout@v4
 
@@ -21,7 +26,7 @@ jobs:
       - run: python watcher.py
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC || vars.NTFY_TOPIC }}
-          TEST: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
+          TEST: ${{ inputs.test && '1' || '0' }}
 
       - uses: actions/upload-artifact@v4
         if: always()
